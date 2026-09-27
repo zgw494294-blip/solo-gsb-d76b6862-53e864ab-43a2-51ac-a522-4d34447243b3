@@ -121,3 +121,82 @@ def test_decode_too_long():
     resp = client.post("/api/decode", json={"text": "⠁" * 501})
     assert resp.status_code == 422
     assert resp.json()["errors"][0]["code"] == "too_long"
+
+
+# ---------------------------------------------------------------------------
+# 双面点阵避让
+# ---------------------------------------------------------------------------
+
+def test_avoid_ok_feasible():
+    resp = client.post("/api/avoid", json={
+        "front": "ac", "back": "c", "width": 10, "min_distance": 1.0,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["feasible"] is True
+    assert data["conflict_count"] == 0
+    assert data["conflicts"] == []
+    assert data["shift"] == {"dx": 0.0, "dy": 0.0}
+    assert data["evaluated"] == 3721
+    # 端点带行/格/点号，反面点为翻转并位移后的正面坐标
+    assert data["front"]["points"][0]["row"] == 0
+    assert {"row", "col", "dot", "x", "y"} <= set(data["front"]["points"][0])
+
+
+def test_avoid_conflict_structure():
+    resp = client.post("/api/avoid", json={
+        "front": "q" * 10, "back": "q" * 10, "width": 10, "min_distance": 3.0,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["feasible"] is False
+    assert data["conflict_count"] == len(data["conflicts"]) == 46
+    cf = data["conflicts"][0]
+    assert set(cf) == {"front", "back", "distance_mm"}
+    assert set(cf["front"]) == {"side", "row", "col", "dot", "x", "y"}
+    assert cf["front"]["side"] == "front"
+    assert cf["back"]["side"] == "back"
+
+
+def test_avoid_default_min_distance():
+    resp = client.post("/api/avoid", json={"front": "abc", "back": "cba", "width": 10})
+    assert resp.status_code == 200
+    assert resp.json()["min_distance"] == 1.5
+
+
+def test_avoid_front_and_back_validation_errors():
+    resp = client.post("/api/avoid", json={
+        "front": "a!", "back": "b@", "width": 10, "min_distance": 1.0,
+    })
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data["ok"] is False
+    assert {e.get("side") for e in data["errors"]} == {"front", "back"}
+
+
+@pytest.mark.parametrize("payload,code", [
+    ({"front": "ab1", "back": "ok", "width": 10, "min_distance": 1.0}, "mixed_word"),
+    ({"front": "ok", "back": "ok", "width": 41, "min_distance": 1.0}, "bad_width"),
+    ({"front": "a" * 501, "back": "ok", "width": 10, "min_distance": 1.0}, "too_long"),
+])
+def test_avoid_reuses_existing_validation(payload, code):
+    resp = client.post("/api/avoid", json=payload)
+    assert resp.status_code == 422
+    assert any(e["code"] == code for e in resp.json()["errors"])
+
+
+@pytest.mark.parametrize("dist", [0.0, 0.05, 3.01, 1.23])
+def test_avoid_bad_min_distance(dist):
+    resp = client.post("/api/avoid", json={
+        "front": "abc", "back": "cba", "width": 10, "min_distance": dist,
+    })
+    assert resp.status_code == 422
+    assert any(e["code"] == "bad_min_distance" for e in resp.json()["errors"])
+
+
+def test_avoid_missing_field():
+    resp = client.post("/api/avoid", json={"front": "abc", "width": 10})
+    assert resp.status_code == 422
+    assert resp.json()["ok"] is False

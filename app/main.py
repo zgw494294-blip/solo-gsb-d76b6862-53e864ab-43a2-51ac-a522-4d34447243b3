@@ -8,10 +8,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .avoidance import avoid
 from .braille import ValidationError, typeset
 from .reader import decode
 
-app = FastAPI(title="六点盲文排版台", version="1.1.0")
+app = FastAPI(title="六点盲文排版台", version="1.2.0")
 
 
 class TypesetIn(BaseModel):
@@ -25,6 +26,17 @@ class DecodeIn(BaseModel):
     # 格数上限与点位合法性由 reader.decode 统一处理并给出盲文行列定位；
     # 这里仅约束基本类型。
     text: str = Field(..., description="Unicode 六点盲文（可含盲文空格与换行），不超过 500 格")
+
+
+class AvoidIn(BaseModel):
+    # 两篇原文的合法性（行/列定位）与行宽由 braille.validate 统一处理，
+    # 最小点距由 avoidance.avoid 校验；这里仅约束基本类型。
+    front: str = Field(..., description="正面 ASCII 原文，不超过 500 字符")
+    back: str = Field(..., description="反面 ASCII 原文，不超过 500 字符")
+    width: int = Field(..., description="两面共同行宽，每行 10～40 格")
+    min_distance: float = Field(
+        1.5, description="最小点距（毫米），0.1～3.0，限一位小数",
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -54,6 +66,17 @@ def api_typeset(payload: TypesetIn):
 def api_decode(payload: DecodeIn):
     try:
         result = decode(payload.text)
+    except ValidationError as exc:
+        return JSONResponse(status_code=422, content={"ok": False, "errors": exc.errors})
+    result["ok"] = True
+    return result
+
+
+@app.post("/api/avoid")
+def api_avoid(payload: AvoidIn):
+    try:
+        result = avoid(payload.front, payload.back, payload.width,
+                       payload.min_distance)
     except ValidationError as exc:
         return JSONResponse(status_code=422, content={"ok": False, "errors": exc.errors})
     result["ok"] = True

@@ -9,13 +9,14 @@
 <body>
 <header class="site-header">
   <h1>六点盲文排版台</h1>
-  <p class="subtitle">英语一级（Grade 1）六点盲文 · 转写排版 ↔ 识读还原 · 完全离线运行</p>
+  <p class="subtitle">英语一级（Grade 1）六点盲文 · 转写排版 ↔ 识读还原 · 双面点阵避让 · 完全离线运行</p>
 </header>
 
 <main>
   <nav class="tabs" aria-label="视图切换">
     <button type="button" class="tab active" data-view="typeset">盲文排版</button>
     <button type="button" class="tab" data-view="decode">盲文识读</button>
+    <button type="button" class="tab" data-view="avoid">双面点阵避让</button>
   </nav>
 
   <div id="view-typeset" class="view">
@@ -116,6 +117,99 @@
         <li><b>⠠（点 6）</b>只把紧随的一个字母转为大写；<b>⠼（点 3456）</b>使后续 a～i、j 点位分别读作 1～9、0，数字状态到词间格或普通换行结束。</li>
         <li><b>⠤（点 36）</b>仅作行尾断词标记：去掉该格及其后的换行并接续同一词；数字词续行须以 <b>⠼</b> 重新起始。</li>
         <li>孤立标记、未定义点位、行内连字符与不合法的数字续行均按<b>盲文行、列</b>定位报错（点击错误可跳转到输入位置），且不输出部分解读文本。</li>
+      </ul>
+    </section>
+  </div>
+
+  <div id="view-avoid" class="view" hidden>
+    <section class="panel input-panel">
+      <div class="panel-head">
+        <h2>① 输入正、反两篇原文与共同行宽</h2>
+        <span class="hint">复用「盲文排版」同一套校验与动态规划排版</span>
+      </div>
+
+      <div class="avoid-inputs">
+        <div class="avoid-col">
+          <div class="panel-head">
+            <h3 class="side-title side-front">正面</h3>
+            <span class="counter"><span id="avFrontCount">0</span> / 500</span>
+          </div>
+          <textarea id="avFrontInput" rows="5" maxlength="500" spellcheck="false"
+            placeholder="正面原文：ASCII 字母、数字、空格与换行；每个词只能全为字母或全为数字。"></textarea>
+        </div>
+        <div class="avoid-col">
+          <div class="panel-head">
+            <h3 class="side-title side-back">反面</h3>
+            <span class="counter"><span id="avBackCount">0</span> / 500</span>
+          </div>
+          <textarea id="avBackInput" rows="5" maxlength="500" spellcheck="false"
+            placeholder="反面原文：水平翻转后与正面叠压；同样的校验与排版规则。"></textarea>
+        </div>
+      </div>
+
+      <div class="controls">
+        <label class="width-label">共同行宽
+          <input type="number" id="avWidthInput" min="10" max="40" step="1" value="20">
+          <span class="hint">10～40 格</span>
+        </label>
+        <label class="width-label">最小点距
+          <input type="number" id="avDistInput" min="0.1" max="3.0" step="0.1" value="1.5">
+          <span class="hint">0.1～3.0 毫米（一位小数）</span>
+        </label>
+        <div class="buttons">
+          <button type="button" id="btnAvoid" class="primary">计算避让位移（Ctrl+Enter）</button>
+          <button type="button" id="btnAvSample">示例</button>
+          <button type="button" id="btnAvClear">清空</button>
+        </div>
+      </div>
+
+      <div id="avErrorBox" class="error-box" hidden></div>
+    </section>
+
+    <section class="panel result-panel" id="avResultPanel" hidden>
+      <div class="panel-head">
+        <h2>② 最佳位移与冲突</h2>
+      </div>
+
+      <div id="avVerdict" class="av-verdict"></div>
+
+      <div class="stats" id="avStatsBar"></div>
+
+      <div class="legend">
+        <span class="legend-item"><i class="sw sw-av-front"></i>正面凸点</span>
+        <span class="legend-item"><i class="sw sw-av-back"></i>反面凸点（已翻转并位移）</span>
+        <span class="legend-item"><i class="sw sw-av-conflict"></i>冲突点 / 冲突连线</span>
+      </div>
+
+      <div id="avOverlayWrap" class="av-overlay-wrap"></div>
+
+      <div class="panel-head" style="margin-top:16px">
+        <h3>冲突点对（行、格均 0 基）</h3>
+      </div>
+      <div id="avConflictWrap" class="av-conflict-wrap"></div>
+
+      <div class="panel-head" style="margin-top:16px">
+        <h3>③ 两面排版明细（供逐格核对）</h3>
+      </div>
+      <div class="av-sides">
+        <div class="av-side">
+          <h3 class="side-title side-front">正面排版</h3>
+          <div id="avFrontLines" class="lines av-mini-lines"></div>
+        </div>
+        <div class="av-side">
+          <h3 class="side-title side-back">反面排版（翻转前原格）</h3>
+          <div id="avBackLines" class="lines av-mini-lines"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel rules">
+      <h2>避让规则</h2>
+      <ul>
+        <li>零基行格 <b>(r,c)</b>：点 1～3 坐标为 <b>(6c, 10r+2.5k)</b>，点 4～6 为 <b>(6c+2.5, 10r+2.5k)</b>，k=0～2，单位毫米；只计凸点。</li>
+        <li>反面点映射到正面坐标：<b>(6(w-1)+2.5-x+dx, y+dy)</b>；dx、dy 各取 <b>-3～3 毫米、步长 0.1</b>，共 61×61 个位移全部遍历。</li>
+        <li>两面点距<b>严格小于</b>最小点距（0.1～3.0 毫米，一位小数）即记一对冲突；距离比较统一放大 10 倍用整数平方，避免浮点误差。</li>
+        <li>择优顺序：<b>冲突对数 → dx²+dy² → dx → dy</b> 依次最小。零冲突显示「可行」，否则说明仍有冲突并在叠加图与列表中标出。</li>
       </ul>
     </section>
   </div>
