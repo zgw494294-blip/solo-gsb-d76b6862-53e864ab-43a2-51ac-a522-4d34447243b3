@@ -121,3 +121,72 @@ def test_decode_too_long():
     resp = client.post("/api/decode", json={"text": "⠁" * 501})
     assert resp.status_code == 422
     assert resp.json()["errors"][0]["code"] == "too_long"
+
+
+def test_avoid_ok_feasible():
+    resp = client.post("/api/avoid", json={
+        "front": "a", "back": "a", "width": 10, "min_distance": 1.0,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["feasible"] is True
+    assert data["conflict_count"] == 0
+    assert data["conflicts"] == []
+    assert (data["dx"], data["dy"]) == (0.0, 0.0)
+    assert data["front"]["braille_text"] == "⠁"
+    assert data["back"]["braille_text"] == "⠁"
+
+
+def test_avoid_unavoidable_conflicts():
+    resp = client.post("/api/avoid", json={
+        "front": "yyyyyyyyyy", "back": "yyyyyyyyyy",
+        "width": 10, "min_distance": 3.0,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["feasible"] is False
+    assert data["conflict_count"] == len(data["conflicts"]) > 0
+    pair = data["conflicts"][0]
+    assert pair["front"]["face"] == "front"
+    assert pair["back"]["face"] == "back"
+    assert set(pair["front"]) == {"face", "row", "cell", "dot"}
+
+
+def test_avoid_bad_min_distance():
+    for bad in (0.15, 0.05, 3.1, 0, -0.5):
+        resp = client.post("/api/avoid", json={
+            "front": "a", "back": "a", "width": 10, "min_distance": bad,
+        })
+        assert resp.status_code == 422
+        assert resp.json()["errors"][0]["code"] == "bad_min_distance"
+
+
+def test_avoid_text_errors_carry_face():
+    resp = client.post("/api/avoid", json={
+        "front": "ab\tc", "back": "ok", "width": 10, "min_distance": 1.0,
+    })
+    assert resp.status_code == 422
+    err = resp.json()["errors"][0]
+    assert err["code"] == "illegal_char"
+    assert err["face"] == "front"
+    assert (err["line"], err["col"]) == (1, 3)
+
+    resp = client.post("/api/avoid", json={
+        "front": "ok", "back": "ab\tc", "width": 10, "min_distance": 1.0,
+    })
+    assert resp.json()["errors"][0]["face"] == "back"
+
+
+def test_avoid_bad_width_reported_once():
+    resp = client.post("/api/avoid", json={
+        "front": "a", "back": "b", "width": 41, "min_distance": 1.0,
+    })
+    assert resp.status_code == 422
+    assert [e["code"] for e in resp.json()["errors"]] == ["bad_width"]
+
+
+def test_avoid_missing_field():
+    resp = client.post("/api/avoid", json={"front": "a", "back": "a", "width": 10})
+    assert resp.status_code == 422
+    assert resp.json()["ok"] is False

@@ -356,6 +356,95 @@ textarea.braille-input {
   min-height: 64px;
 }
 
+/* 双面避让视图 */
+.avoid-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.avoid-input-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.avoid-input-head label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-dark);
+}
+
+.verdict {
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 14.5px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.verdict.ok {
+  background: #e8f3ea;
+  border: 1px solid #7fb08a;
+  color: var(--ok);
+}
+.verdict.bad {
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  color: var(--error-border);
+}
+
+.overlay-wrap {
+  overflow: auto;
+  max-height: 560px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefa;
+  padding: 10px;
+}
+#avoOverlay { display: block; }
+
+.ov-grid rect { fill: none; stroke: #ece4d2; stroke-width: 1; }
+.ov-front { fill: var(--dot-on); }
+.ov-back { fill: #2f6fb2; fill-opacity: .55; }
+.ov-front.conf, .ov-back.conf { stroke: var(--error-border); stroke-width: 2.5; }
+.ov-links line { stroke: var(--error-border); stroke-width: 1.2; stroke-opacity: .55; }
+
+.dot-sw {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.dot-sw-front { background: var(--dot-on); }
+.dot-sw-back { background: rgba(47, 111, 178, .55); }
+.dot-sw-conflict {
+  width: 9px; height: 9px;
+  background: transparent;
+  border: 2.5px solid var(--error-border);
+}
+
+.conf-title {
+  font-size: 15px;
+  color: var(--accent-dark);
+  margin: 16px 0 8px;
+}
+.conf-title .hint { font-weight: 400; margin-left: 6px; }
+.conf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: 13px ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+.conf-item {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fffefa;
+}
+.conf-empty, .conf-more { color: var(--muted); font-size: 13px; }
+
+@media (max-width: 640px) {
+  .avoid-inputs { grid-template-columns: 1fr; }
+}
+
 .site-footer {
   text-align: center;
   color: var(--muted);

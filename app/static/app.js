@@ -5,13 +5,16 @@ const $ = (sel) => document.querySelector(sel);
 
 /* ---------------- 视图切换 ---------------- */
 
+const VIEW_IDS = ["typeset", "decode", "avoid"];
+
 document.querySelectorAll(".tab").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("active", b === btn);
     });
-    $("#view-typeset").hidden = btn.dataset.view !== "typeset";
-    $("#view-decode").hidden = btn.dataset.view !== "decode";
+    VIEW_IDS.forEach((v) => {
+      $("#view-" + v).hidden = v !== btn.dataset.view;
+    });
   });
 });
 
@@ -390,3 +393,317 @@ dec.input.addEventListener("keydown", (e) => {
 });
 
 updateDecCount();
+
+/* ---------------- 双面避让视图 ---------------- */
+
+const avo = {
+  front: $("#avoFront"),
+  back: $("#avoBack"),
+  frontCount: $("#avoFrontCount"),
+  backCount: $("#avoBackCount"),
+  width: $("#avoWidth"),
+  dist: $("#avoDist"),
+  btn: $("#btnAvoid"),
+  btnSample: $("#btnAvoSample"),
+  btnClear: $("#btnAvoClear"),
+  errors: $("#avoErrorBox"),
+  panel: $("#avoResultPanel"),
+  verdict: $("#avoVerdict"),
+  stats: $("#avoStats"),
+  overlay: $("#avoOverlay"),
+  confCount: $("#avoConfCount"),
+  conflicts: $("#avoConflicts"),
+  copy: $("#btnAvoCopy"),
+};
+
+let lastAvoid = null;
+
+function updateAvoCounts() {
+  const nf = avo.front.value.length;
+  const nb = avo.back.value.length;
+  avo.frontCount.textContent = String(nf);
+  avo.backCount.textContent = String(nb);
+  avo.frontCount.parentElement.classList.toggle("over", nf > 500);
+  avo.backCount.parentElement.classList.toggle("over", nb > 500);
+}
+
+avo.front.addEventListener("input", updateAvoCounts);
+avo.back.addEventListener("input", updateAvoCounts);
+
+/* 错误展示：face 字段区分正反面，点击定位到对应输入框 */
+function showAvoErrors(errors) {
+  avo.panel.hidden = true;
+  avo.errors.innerHTML = "";
+  const h = document.createElement("h3");
+  h.textContent = `发现 ${errors.length} 处问题，请修正后重试：`;
+  avo.errors.appendChild(h);
+  const ul = document.createElement("ul");
+  for (const err of errors) {
+    const li = document.createElement("li");
+    const tag = err.face === "front" ? "【正面】" : err.face === "back" ? "【反面】" : "";
+    li.textContent = tag + err.message;
+    if (typeof err.pos === "number" && err.face) {
+      li.title = "点击定位到输入位置";
+      li.addEventListener("click", () => {
+        const input = err.face === "front" ? avo.front : avo.back;
+        input.focus();
+        input.setSelectionRange(err.pos, err.pos + (err.length || 1));
+      });
+    }
+    ul.appendChild(li);
+  }
+  avo.errors.appendChild(ul);
+  avo.errors.hidden = false;
+}
+
+async function doAvoid() {
+  const front = avo.front.value;
+  const back = avo.back.value;
+  const width = Number(avo.width.value);
+  const dist = Number(avo.dist.value);
+
+  // 前端即时校验（最终以服务端为准）
+  const local = [];
+  for (const [name, text] of [["正面", front], ["反面", back]]) {
+    if (!/^[\x20\nA-Za-z0-9]*$/.test(text)) {
+      local.push(`${name}含非法字符：仅允许 ASCII 字母、数字、空格与换行。`);
+    }
+    if (text.length > 500) local.push(`${name}超过 500 个字符。`);
+    if (!/[A-Za-z0-9]/.test(text)) local.push(`${name}至少需要包含一个字母或数字。`);
+  }
+  if (!Number.isInteger(width) || width < 10 || width > 40) {
+    local.push("共同行宽须为 10～40 的整数。");
+  }
+  if (
+    !Number.isFinite(dist) || dist < 0.1 || dist > 3 ||
+    Math.abs(dist * 10 - Math.round(dist * 10)) > 1e-9
+  ) {
+    local.push("最小点距须为 0.1～3.0 毫米、限一位小数。");
+  }
+  if (local.length) {
+    showAvoErrors([{ message: local.join("\n") }]);
+    return;
+  }
+
+  avo.btn.disabled = true;
+  try {
+    const resp = await fetch("/api/avoid", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ front, back, width, min_distance: dist }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.ok === false) {
+      showAvoErrors(data.errors || [{ message: "避让计算失败。" }]);
+      return;
+    }
+    avo.errors.hidden = true;
+    renderAvoid(data);
+  } catch (e) {
+    showAvoErrors([{ message: "请求失败：" + e }]);
+  } finally {
+    avo.btn.disabled = false;
+  }
+}
+
+/* ---------------- 叠加图与结果渲染 ---------------- */
+
+const MM = 9;      // 叠加图比例：每毫米像素
+const DOT_R = 0.8; // 点半径（毫米）
+const SVGNS = "http://www.w3.org/2000/svg";
+const CONF_LIST_MAX = 200; // 冲突列表最多直接列出的条数（叠加图始终全量标出）
+
+function fmtShift(v) {
+  return (v >= 0 ? "+" : "") + v.toFixed(1) + "mm";
+}
+
+// 点号 -> 格内偏移（毫米）：点 1～3 在左列，点 4～6 在右列
+function dotOffset(d) {
+  return d <= 3 ? [0, 2.5 * (d - 1)] : [2.5, 2.5 * (d - 4)];
+}
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+// 提取一面全部凸点在正面坐标系中的位置："行,格,点" -> [x, y]（毫米）
+// shift 为 null 表示正面原坐标；否则为 {mirror, dx, dy}，反面先镜像再加位移
+function collectPoints(side, shift) {
+  const pts = new Map();
+  side.lines.forEach((line, r) => {
+    line.cells.forEach((cell, c) => {
+      for (const d of cell.dots) {
+        const [ox, oy] = dotOffset(d);
+        let x = 6 * c + ox;
+        let y = 10 * r + oy;
+        if (shift) {
+          x = shift.mirror - x + shift.dx;
+          y += shift.dy;
+        }
+        pts.set(`${r},${c},${d}`, [x, y]);
+      }
+    });
+  });
+  return pts;
+}
+
+const keyOf = (end) => `${end.row},${end.cell},${end.dot}`;
+
+function renderOverlay(r) {
+  const rows = Math.max(r.front.lines.length, r.back.lines.length, 1);
+  const spanX = 6 * (r.width - 1) + 2.5;   // 点阵横向跨度（毫米）
+  const spanY = (rows - 1) * 10 + 5;       // 点阵纵向跨度（毫米）
+  const pad = 4;                           // 留白，容纳 ±3mm 位移
+  const X = (v) => (v + pad) * MM;
+  const Y = (v) => (v + pad) * MM;
+
+  const svg = avo.overlay;
+  svg.innerHTML = "";
+  svg.setAttribute("width", (spanX + 2 * pad) * MM);
+  svg.setAttribute("height", (spanY + 2 * pad) * MM);
+
+  // 行格参考线（每格 6×10 毫米）
+  const grid = svgEl("g", { class: "ov-grid" });
+  for (let rr = 0; rr < rows; rr++) {
+    for (let c = 0; c < r.width; c++) {
+      grid.appendChild(svgEl("rect", {
+        x: X(6 * c - 1.75), y: Y(10 * rr - 2.5),
+        width: 6 * MM, height: 10 * MM,
+      }));
+    }
+  }
+  svg.appendChild(grid);
+
+  const frontPts = collectPoints(r.front, null);
+  const backPts = collectPoints(r.back, {
+    mirror: 6 * (r.width - 1) + 2.5, dx: r.dx, dy: r.dy,
+  });
+
+  // 冲突连线（画在点的下层）
+  const links = svgEl("g", { class: "ov-links" });
+  const confFront = new Set();
+  const confBack = new Set();
+  for (const cf of r.conflicts) {
+    confFront.add(keyOf(cf.front));
+    confBack.add(keyOf(cf.back));
+    const p1 = frontPts.get(keyOf(cf.front));
+    const p2 = backPts.get(keyOf(cf.back));
+    if (!p1 || !p2) continue;
+    links.appendChild(svgEl("line", {
+      x1: X(p1[0]), y1: Y(p1[1]), x2: X(p2[0]), y2: Y(p2[1]),
+    }));
+  }
+  svg.appendChild(links);
+
+  const dots = svgEl("g", { class: "ov-dots" });
+  for (const [key, [x, y]] of frontPts) {
+    dots.appendChild(svgEl("circle", {
+      class: "ov-front" + (confFront.has(key) ? " conf" : ""),
+      cx: X(x), cy: Y(y), r: DOT_R * MM,
+    }));
+  }
+  for (const [key, [x, y]] of backPts) {
+    dots.appendChild(svgEl("circle", {
+      class: "ov-back" + (confBack.has(key) ? " conf" : ""),
+      cx: X(x), cy: Y(y), r: DOT_R * MM,
+    }));
+  }
+  svg.appendChild(dots);
+}
+
+function renderConflicts(r) {
+  avo.confCount.textContent = String(r.conflict_count);
+  avo.conflicts.innerHTML = "";
+  if (r.conflict_count === 0) {
+    const div = document.createElement("div");
+    div.className = "conf-empty";
+    div.textContent = "零冲突：该位移下两面凸点互不干扰，可行。";
+    avo.conflicts.appendChild(div);
+    return;
+  }
+  const fmtEnd = (e) =>
+    `${e.face === "front" ? "正面" : "反面"} 行${e.row}·格${e.cell}·点${e.dot}`;
+  const shown = r.conflicts.slice(0, CONF_LIST_MAX);
+  for (const cf of shown) {
+    const div = document.createElement("div");
+    div.className = "conf-item";
+    div.textContent = `${fmtEnd(cf.front)} ↔ ${fmtEnd(cf.back)}`;
+    avo.conflicts.appendChild(div);
+  }
+  if (r.conflict_count > shown.length) {
+    const more = document.createElement("div");
+    more.className = "conf-more";
+    more.textContent = `…其余 ${r.conflict_count - shown.length} 对从略（叠加图中已全部标出）。`;
+    avo.conflicts.appendChild(more);
+  }
+}
+
+function renderAvoid(r) {
+  lastAvoid = r;
+  avo.panel.hidden = false;
+
+  avo.verdict.className = "verdict " + (r.feasible ? "ok" : "bad");
+  avo.verdict.textContent = r.feasible
+    ? `✓ 可行：位移 dx=${fmtShift(r.dx)}、dy=${fmtShift(r.dy)} 下零冲突。`
+    : `✗ 仍有冲突：最优位移 dx=${fmtShift(r.dx)}、dy=${fmtShift(r.dy)} 下仍有 ${r.conflict_count} 对冲突。`;
+
+  avo.stats.innerHTML = [
+    `行宽：<b>${r.width}</b> 格`,
+    `最小点距：<b>${r.min_distance.toFixed(1)}</b> 毫米`,
+    `正面凸点：<b>${r.front_dots}</b> 个`,
+    `反面凸点：<b>${r.back_dots}</b> 个`,
+    `最佳位移：<b>dx=${fmtShift(r.dx)}，dy=${fmtShift(r.dy)}</b>`,
+    `冲突点对：<b>${r.conflict_count}</b>`,
+  ].map((s) => `<span>${s}</span>`).join("");
+
+  renderOverlay(r);
+  renderConflicts(r);
+  avo.panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+avo.btn.addEventListener("click", doAvoid);
+
+avo.copy.addEventListener("click", () => {
+  if (!lastAvoid) return;
+  const r = lastAvoid;
+  const head = r.feasible ? "双面避让结果：可行（零冲突）。" : `双面避让结果：仍有 ${r.conflict_count} 对冲突。`;
+  copyText(avo.copy, head +
+    `行宽 ${r.width} 格，最小点距 ${r.min_distance.toFixed(1)}mm，` +
+    `最佳位移 dx=${fmtShift(r.dx)}、dy=${fmtShift(r.dy)}。`);
+});
+
+avo.btnClear.addEventListener("click", () => {
+  avo.front.value = "";
+  avo.back.value = "";
+  updateAvoCounts();
+  avo.errors.hidden = true;
+  avo.panel.hidden = true;
+  avo.front.focus();
+});
+
+avo.btnSample.addEventListener("click", () => {
+  avo.front.value =
+`Hello Braille
+The quick brown fox`;
+  avo.back.value =
+`pack my box with
+five dozen liquor jugs
+2026 007`;
+  avo.width.value = 20;
+  avo.dist.value = "1.0";
+  updateAvoCounts();
+  doAvoid();
+});
+
+for (const input of [avo.front, avo.back]) {
+  input.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      doAvoid();
+    }
+  });
+}
+
+updateAvoCounts();

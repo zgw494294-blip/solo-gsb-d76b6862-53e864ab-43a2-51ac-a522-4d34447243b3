@@ -73,12 +73,26 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
   （点击错误可跳转），且不输出部分解读文本。
 - **页面**：顶部标签切换「盲文排版 / 盲文识读」两个视图；识读结果显示原文与格数/字符数/行数统计，支持一键复制。
 
+### 双面点阵避让（正反对印）
+
+- **入口**：页面顶部「双面避让」标签，或 `POST /api/avoid`。
+- **输入**：正面原文、反面原文（各自复用盲文排版的全部校验与排版规则）、共同行宽（10～40 格）、
+  最小点距（0.1～3.0 毫米，限一位小数）；两面的输入错误带「正面 / 反面」标记并定位到行、列。
+- **坐标**：零基行格 (r, c) 中，点 1～3 坐标为 (6c, 10r+2.5k)，点 4～6 为 (6c+2.5, 10r+2.5k)，
+  k=0～2，单位毫米，只计凸点；反面点 (x, y) 映射到正面坐标 (6(w−1)+2.5−x+dx, y+dy)。
+- **避让搜索**：dx、dy 各取 −3～3 毫米、步长 0.1 毫米，遍历全部 61×61 个位移；
+  两面点距小于最小点距记一对冲突（以放大 10 倍的整数平方比较距离）；
+  按 **冲突对数 → dx²+dy² → dx → dy** 依次最小择优。
+- **结果**：返回最优位移与全部冲突点对（两端均附面、行、格、点号，零基）；
+  零冲突显示**可行**，否则说明**仍有冲突**；页面叠加两面点阵并以红圈、连线标出冲突点对。
+
 ## API
 
 | 方法 | 路径 | 说明 |
 | ---- | ---- | ---- |
 | `POST` | `/api/typeset` | 请求体 `{"text": "...", "width": 20}`，返回排版结果；输入非法时 HTTP 422，`errors` 含行/列定位 |
 | `POST` | `/api/decode` | 请求体 `{"text": "..."}`（Unicode 六点盲文，≤500 格），返回 `{"text": ...}` 识读结果；输入非法时 HTTP 422，`errors` 含盲文行/列定位，不返回部分结果 |
+| `POST` | `/api/avoid` | 请求体 `{"front": "...", "back": "...", "width": 20, "min_distance": 1.0}`，返回最优位移 `dx`/`dy`、`feasible` 与全部冲突点对（两端含面/行/格/点号，零基）及两面排版结果；输入非法时 HTTP 422，原文错误带 `face` 区分正反面 |
 | `GET` | `/api/health` | 健康检查 |
 
 例：
@@ -91,6 +105,10 @@ curl -s -X POST http://localhost:8000/api/typeset \
 curl -s -X POST http://localhost:8000/api/decode \
   -H 'Content-Type: application/json' \
   -d '{"text":"⠠⠓⠑⠇⠇⠕⠀⠼⠃⠚⠃⠋"}'
+
+curl -s -X POST http://localhost:8000/api/avoid \
+  -H 'Content-Type: application/json' \
+  -d '{"front":"Hello Braille","back":"pack my box 2026","width":20,"min_distance":1.0}'
 ```
 
 ## 离线说明
@@ -108,13 +126,15 @@ curl -s -X POST http://localhost:8000/api/decode \
 │   ├── main.py            # FastAPI：接口与静态托管
 │   ├── braille.py         # 校验、转写与动态规划排版引擎
 │   ├── reader.py          # 盲文识读引擎（Unicode 盲文 → ASCII）
+│   ├── avoid.py           # 双面点阵避让引擎（位移搜索与冲突枚举）
 │   └── static
-│       ├── index.html     # 页面结构（排版 / 识读两个视图）
-│       ├── style.css      # 样式（盲文格六点矩阵）
+│       ├── index.html     # 页面结构（排版 / 识读 / 双面避让三个视图）
+│       ├── style.css      # 样式（盲文格六点矩阵、点阵叠加图）
 │       └── app.js         # 前端交互（原生 JS）
 ├── tests
 │   ├── test_braille.py    # 排版引擎测试（含与独立 DP 的随机对照）
 │   ├── test_reader.py     # 识读引擎测试（含排版→识读往返对照）
+│   ├── test_avoid.py      # 避让引擎测试（含与朴素枚举的随机对照）
 │   └── test_api.py        # 接口层测试
 ├── Dockerfile
 ├── docker-compose.yml
@@ -130,4 +150,5 @@ python3 -m pytest tests/ -q
 ```
 
 测试覆盖转写规则、识读规则、报错定位、超宽词断行、数字续行标记、各优化目标优先级、
-排版→识读往返一致性，并以独立实现的记忆化 DP 为基准做随机对照（不同宽度、长短词、大小写与数字混合）。
+排版→识读往返一致性、双面避让的坐标映射/位移择优/冲突枚举与参数校验，
+并以独立实现为基准做随机对照（排版对照记忆化 DP，避让对照朴素逐位移枚举）。
